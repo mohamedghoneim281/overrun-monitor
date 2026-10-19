@@ -1,0 +1,4 @@
+protected,culprit,optional,tet_protected_ms,culprit_inflated_cost_ms,single_job_slowdown_s_star
+ctrl,sens,False,6.005,4.086,2.469652471855115
+ctrl,tele,True,6.005,8.086,1.7426416027702203
+ctrl,viz,True,6.005,12.086,1.496855866291577
