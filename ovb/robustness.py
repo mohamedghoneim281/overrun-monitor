@@ -20,23 +20,26 @@ SCALES = (1.0, 3.0, 10.0)
 
 def run(out: Path, names: list[str], seeds: int = 40, dur: float = 40.0) -> pd.DataFrame:
     path = Path(out) / "runs_noise.csv"
-    if path.exists():
-        return pd.read_csv(path)
+    old = pd.read_csv(path) if path.exists() else pd.DataFrame()
+    have = set(old.policy.unique()) if len(old) else set()
+    todo = [n for n in names if n not in have]            # simulate only policies missing from the cache
+    if not todo:
+        return old[old.policy.isin(names)]
     from .extend import extended_specs          # lazy: extend imports analyze imports robustness
-    grid = {s.name: s for s in ex.policy_grid(False) + ex.resp_specs() + extended_specs()}
+    grid = {s.name: s for s in ex.policy_grid(False) + ex.resp_specs() + ex.utilx_specs() + extended_specs()}
     ehat = ex.ehat_ctrl()
     rows = []
     for sc in SCALES:
-        for n in names:
+        for n in todo:
             fac = grid[n].factory(ehat)
             for scen in ex.SCENARIOS:
                 for s in range(ex.TEST_SEED0, ex.TEST_SEED0 + seeds):
                     m = simulate(fac, scen, s, duration_us=int(dur * 1e6), noise_scale=sc, with_plant=False).metrics
                     rows.append(dict(noise_scale=sc, policy=n, scenario=scen, seed=s, miss_rate=m["miss_rate"],
                                      opt_frac=m["opt_frac"], false_triggers_per_min=m["false_triggers_per_min"]))
-    df = pd.DataFrame(rows)
+    df = pd.concat([old, pd.DataFrame(rows)], ignore_index=True)
     df.to_csv(path, index=False)
-    return df
+    return df[df.policy.isin(names)]
 
 
 def table(df: pd.DataFrame) -> pd.DataFrame:

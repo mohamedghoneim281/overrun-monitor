@@ -2,7 +2,7 @@
 # One command: install, test, run all experiments, verify.   Usage:  bash setup_and_run.sh [smoke|quick|full]
 #   smoke  ~2 min   tiny run, checks that everything works on your computer
 #   quick  ~10-25 min  fewer seeds, same conclusions
-#   full   ~15-45 min  exactly the run behind the README numbers (default)
+#   full   ~30-60 min  exactly the run behind the README numbers (default)
 set -e
 cd "$(dirname "$0")"
 MODE="${1:-full}"

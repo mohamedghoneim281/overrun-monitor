@@ -21,10 +21,10 @@ from .taskset import OVERHEADS, TASKS, degraded_tasks
 TARGETS = (0.80, 0.85, 0.90)
 SCEN = ex.SCENARIOS
 BOOT = 5000
-FAM_ORDER = ("util", "resp", "overrun")
-COL = {"util": "#d95f02", "resp": "#7570b3", "overrun": "#1b9e77", "none": "#444444",
+FAM_ORDER = ("util", "utilx", "resp", "overrun")
+COL = {"util": "#d95f02", "utilx": "#a6761d", "resp": "#7570b3", "overrun": "#1b9e77", "none": "#444444",
        "always": "#999999", "oracle": "#e7298a"}
-LBL = {"util": "utilisation monitor", "resp": "control response-time monitor",
+LBL = {"util": "utilisation monitor (completed-action proxy)", "utilx": "utilisation monitor (exact window)", "resp": "control response-time monitor",
        "overrun": "overrun-budget monitor (fraction of TET)", "none": "no mitigation",
        "always": "always shed", "oracle": "oracle (clairvoyant)"}
 rng = np.random.default_rng(2026)
@@ -79,9 +79,12 @@ def select_operating_points(pool_train: pd.DataFrame) -> dict:
     for fam in families(pool_train):
         gf = g.loc[fam]
         for tau in TARGETS:
-            feas = gf[gf.opt_frac >= tau]
+            # Rank on the miss rate rounded to 1e-12 (exact ties are otherwise decided by
+            # floating-point rounding, which differs between machines), then on optional work, then on name.
+            feas = gf[gf.opt_frac >= tau].assign(miss_key=lambda x: x.miss_rate.round(12))
             ops[(fam, tau)] = None if feas.empty else \
-                feas.sort_values(["miss_rate", "opt_frac"], ascending=[True, False]).index[0]
+                feas.reset_index().sort_values(["miss_key", "opt_frac", "policy"],
+                                               ascending=[True, False, True]).iloc[0]["policy"]
     return ops
 
 
@@ -101,28 +104,36 @@ def frontier_interp(opt: np.ndarray, miss: np.ndarray, targets) -> np.ndarray:
     return np.interp(targets, opt[k], miss[k], left=np.nan, right=np.nan)
 
 
-def frontier_table(pool_test: pd.DataFrame) -> pd.DataFrame:
-    """Per-family frontier on TEST seeds (bootstrap over seeds) and the ratio overrun/other."""
-    rows, boots, nres = [], {}, 1000
-    for fam in families(pool_test):
+def frontier_table(pool_test: pd.DataFrame, nres: int = 2000) -> pd.DataFrame:
+    """Exploratory per-family frontier on TEST seeds, and ratios overrun/other.
+
+    One bootstrap draw of seed indices is shared by all families within a replicate, so the ratio
+    intervals preserve the pairing across families.  Ratio rows report the ratio of the point-estimate
+    frontiers with the percentile interval of the paired bootstrap ratios."""
+    fams = families(pool_test)
+    mats = {}
+    for fam in fams:
         pols = sorted(pool_test[pool_test.family == fam].policy.unique()) + ["none", "always"]
-        O, M = _mat(pool_test, pols, "opt_frac"), _mat(pool_test, pols, "miss_rate")
-        n = O.shape[1]
-        out = np.empty((nres, len(TARGETS)))
-        for b in range(nres):
-            idx = rng.integers(0, n, n)
-            out[b] = frontier_interp(O[:, idx].mean(1), M[:, idx].mean(1), TARGETS)
-        boots[fam] = out
-        pt = frontier_interp(O.mean(1), M.mean(1), TARGETS)
+        mats[fam] = (_mat(pool_test, pols, "opt_frac"), _mat(pool_test, pols, "miss_rate"))
+    n = next(iter(mats.values()))[0].shape[1]
+    out = {f: np.empty((nres, len(TARGETS))) for f in fams}
+    for b in range(nres):
+        idx = rng.integers(0, n, n)                      # shared by all families
+        for f in fams:
+            O, M = mats[f]
+            out[f][b] = frontier_interp(O[:, idx].mean(1), M[:, idx].mean(1), TARGETS)
+    pt = {f: frontier_interp(mats[f][0].mean(1), mats[f][1].mean(1), TARGETS) for f in fams}
+    rows = []
+    for f in fams:
         for j, tau in enumerate(TARGETS):
-            lo, hi = np.nanpercentile(out[:, j], [2.5, 97.5])
-            rows.append(dict(family=fam, target_opt=tau, miss_rate=pt[j], lo=lo, hi=hi))
-    for other in ("util", "resp"):
-        if "overrun" in boots and other in boots:
+            lo, hi = np.nanpercentile(out[f][:, j], [2.5, 97.5])
+            rows.append(dict(family=f, target_opt=tau, miss_rate=pt[f][j], lo=lo, hi=hi))
+    for other in ("util", "utilx", "resp"):
+        if "overrun" in out and other in out:
             for j, tau in enumerate(TARGETS):
-                r = boots["overrun"][:, j] / boots[other][:, j]
+                r = out["overrun"][:, j] / out[other][:, j]
                 r = r[np.isfinite(r)]
-                rows.append(dict(family=f"ratio overrun/{other}", target_opt=tau, miss_rate=float(np.median(r)),
+                rows.append(dict(family=f"ratio overrun/{other}", target_opt=tau, miss_rate=pt["overrun"][j] / pt[other][j],
                                  lo=float(np.percentile(r, 2.5)), hi=float(np.percentile(r, 97.5))))
     return pd.DataFrame(rows)
 
@@ -141,7 +152,7 @@ def analytic_table() -> pd.DataFrame:
 def main(out: Path, figdir: Path, cfg: dict | None = None) -> None:
     out, figdir = Path(out), Path(figdir)
     figdir.mkdir(exist_ok=True)
-    paths = [out / "runs.csv"] + ([out / "runs_resp.csv"] if (out / "runs_resp.csv").exists() else [])
+    paths = [out / "runs.csv"] + [out / f for f in ("runs_resp.csv", "runs_utilx.csv") if (out / f).exists()]
     df = load(paths)
     pool = pooled(df)
     fams = families(pool)
@@ -174,7 +185,7 @@ def main(out: Path, figdir: Path, cfg: dict | None = None) -> None:
     op_df.to_csv(out / "table_operating_points.csv", index=False)
 
     diffs = []
-    for other in ("util", "resp"):
+    for other in ("util", "utilx", "resp"):
         if other not in fams:
             continue
         for tau in TARGETS:
@@ -219,7 +230,7 @@ def main(out: Path, figdir: Path, cfg: dict | None = None) -> None:
 
     # --- 4. harsher scenarios and noise sensitivity (selected points, not re-tuned) ------------------
     from .extend import extended_specs
-    grid = {s.name: s for s in ex.policy_grid(False) + ex.resp_specs() + extended_specs()}
+    grid = {s.name: s for s in ex.policy_grid(False) + ex.resp_specs() + ex.utilx_specs() + extended_specs()}
     names = {n for (f, t), n in ops.items() if n and t == 0.85} | {"none", "oracle", "always"}
     ext_sel = out / "table_extended_selection.csv"           # post-hoc wider-grid winners (stage `extend`)
     if ext_sel.exists():
@@ -287,7 +298,7 @@ def fig_pareto(df, test_pool, ops, figdir):
         ax.set_title(title); ax.set_ylabel("control deadline misses (%)"); ax.grid(alpha=.3)
         ax.set_xlabel("optional work completed (fraction)")
     axs[0, 0].legend(fontsize=7, loc="upper left")
-    fig.suptitle("Misses vs. optional work preserved (test seeds; circled = point chosen on train seeds for 0.85)")
+    fig.suptitle("Misses vs. optional work retained (test seeds; circled = chosen on training seeds for the 0.85 target)")
     fig.tight_layout(); fig.savefig(figdir / "fig3_pareto.png", dpi=170); plt.close(fig)
 
 
@@ -303,7 +314,7 @@ def fig_gamma(og, test_pool, figdir):
     axs[0].set_ylabel("control deadline misses (%), pooled"); axs[1].set_ylabel("optional work completed")
     axs[0].text(1.05, axs[0].get_ylim()[1] * .9, "trigger at TET", fontsize=8)
     axs[0].legend(fontsize=8)
-    fig.suptitle("Overrun-budget monitor (test seeds): misses are flat for gamma <~ 0.5 and rise towards the TET itself (gamma = 1)")
+    fig.suptitle("Overrun-budget sensitivity on test seeds: smaller budgets trade retained optional work for fewer misses")
     fig.tight_layout(); fig.savefig(figdir / "fig6_gamma_sensitivity.png", dpi=170); plt.close(fig)
 
 
@@ -330,19 +341,19 @@ def fig_validation(out, figdir):
 
 def fig_causes(sc_df, figdir):
     d = sc_df[sc_df.scenario != "none"]
-    order = [p for p in ("none", "util", "resp", "overrun", "oracle", "always") if p in set(d.policy)]
+    order = [p for p in ("none", "util", "utilx", "resp", "overrun", "oracle", "always") if p in set(d.policy)]
     fig, axs = plt.subplots(1, 3, figsize=(14, 4.0))
     for ax, sc in zip(axs, ("spike", "burst", "ramp")):
         g = d[d.scenario == sc].set_index("policy").loc[order]
         bot = np.zeros(len(g))
-        for col, lab, c in (("misses_blocked_by_unwarned_optional", "blocked by optional job dispatched before any warning", "#d95f02"),
-                            ("misses_blocked_by_necessary", "blocked by necessary work", "#7570b3"),
-                            ("misses_backlog", "backlog / polling lag", "#999999")):
+        for col, lab, c in (("misses_blocked_by_unwarned_optional", "optional job running (body not shed)", "#d95f02"),
+                            ("misses_blocked_by_necessary", "necessary work or discard stub running", "#7570b3"),
+                            ("misses_backlog", "no other callback running at arrival", "#999999")):
             ax.bar(g.index, g[col], bottom=bot, label=lab, color=c); bot += g[col].to_numpy()
-        ax.set_title(sc); ax.set_ylabel("missed control deadlines (all test seeds)"); ax.grid(alpha=.3, axis="y")
+        ax.set_title(sc); ax.set_ylabel("missed control jobs (all test seeds)"); ax.grid(alpha=.3, axis="y")
         ax.tick_params(axis="x", labelsize=8)
     axs[0].legend(fontsize=7)
-    fig.suptitle("Why deadlines are still missed (selected operating points for 0.85 optional work)")
+    fig.suptitle("Execution at the arrival of missed control jobs (configurations selected at the 0.85 training target)")
     fig.tight_layout(); fig.savefig(figdir / "fig4_miss_causes.png", dpi=170); plt.close(fig)
 
 

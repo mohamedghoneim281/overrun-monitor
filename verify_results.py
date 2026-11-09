@@ -49,26 +49,29 @@ if n_test < 15:
 # ---- 2. headline claims ---------------------------------------------------------------------------
 op = pd.read_csv(R / "table_operating_points.csv")
 none = op[op.family == "none"].iloc[0]
-u, o, p = get(op, "util"), get(op, "overrun"), get(op, "resp")
+u, o, p, ux = get(op, "util"), get(op, "overrun"), get(op, "resp"), get(op, "utilx")
 check("unmitigated system misses a sensible fraction of control deadlines (0.3%-1.0%)",
       0.3 < none.test_miss_pct < 1.0, f"{none.test_miss_pct:.3f}%")
-check("overrun monitor has fewer misses than utilisation monitor (selected on train, tested on held-out seeds)",
+check("overrun monitor has fewer misses than the utilisation proxy (configurations selected on train seeds, tested on held-out seeds)",
       o.test_miss_pct < u.test_miss_pct, f"{o.test_miss_pct:.3f}% vs {u.test_miss_pct:.3f}%")
+if ux is not None:
+    check("overrun monitor has fewer misses than the exact-window utilisation monitor",
+          o.test_miss_pct < ux.test_miss_pct, f"{o.test_miss_pct:.3f}% vs {ux.test_miss_pct:.3f}%")
 if p is not None:
     check("overrun monitor has fewer misses than control response-time monitor",
           o.test_miss_pct < p.test_miss_pct, f"{o.test_miss_pct:.3f}% vs {p.test_miss_pct:.3f}%")
 check("overrun monitor keeps at least ~80% of optional work", o.test_opt >= 0.80, f"{o.test_opt:.3f}")
 pdiff = pd.read_csv(R / "table_paired_difference.csv")
-check("paired difference overrun - others is negative with 95% CI excluding 0 at every optional-work target",
+check("paired difference overrun - others (selected configurations) is negative with 95% CI excluding 0 at every target",
       bool((pdiff.d_miss_hi < 0).all()), f"{len(pdiff)} comparisons")
 fr = pd.read_csv(R / "table_frontier.csv")
 rat = fr[fr.family.str.startswith("ratio")]
-check("at equal optional work the miss-rate ratio overrun/other has a CI entirely below 1",
+check("exploratory frontiers (paired bootstrap): miss-rate ratio overrun/other has a CI entirely below 1",
       bool((rat.hi < 1).all()), "ratios " + ", ".join(f"{x:.2f}" for x in rat.miss_rate))
 caus = pd.read_csv(R / "table_per_scenario.csv")
 nn = caus[(caus.policy == "none") & (caus.scenario != "none")]
 share = nn.misses_blocked_by_unwarned_optional.sum() / max(1, nn[["misses_blocked_by_unwarned_optional", "misses_blocked_by_necessary", "misses_backlog"]].sum().sum())
-check("most unmitigated misses are a control job blocked by an optional job that started before any warning",
+check("most unmitigated misses are control jobs whose message arrived while an optional job was executing (a temporal association, not a causal proof)",
       share > 0.8, f"{100 * share:.0f}%")
 
 # ---- 3. robustness checks (selected configs, not re-tuned) ----------------------------------------------

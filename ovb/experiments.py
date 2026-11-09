@@ -15,7 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .analysis import build_model, tolerable_exceedance
-from .monitors import AlwaysShed, NoMonitor, Oracle, OverrunMonitor, RespMonitor, UtilMonitor
+from .monitors import (AlwaysShed, NoMonitor, Oracle, OverrunMonitor, RespMonitor, UtilExactMonitor,
+                       UtilMonitor)
 from .sim import simulate
 from .taskset import CTRL, OVERHEADS, TASKS
 
@@ -26,6 +27,7 @@ UTIL_THETAS = (0.50, 0.55, 0.60, 0.70, 0.80, 0.90, 1.00, 1.20)
 UTIL_WINDOWS_MS = (50, 100, 200)
 OVERRUN_GAMMAS = (0.05, 0.10, 0.20, 0.35, 0.50, 0.75, 1.00, 1.50, 2.50)
 HOLDS_MS = (100, 300, 1000)
+UTILX_THETAS = (0.50, 0.55, 0.60, 0.70, 0.80, 0.90, 0.95, 0.98)   # exact utilisation cannot exceed 1
 RESP_PHIS = (0.25, 0.35, 0.50, 0.65, 0.80, 1.00, 1.25)   # fraction of the control deadline
 
 
@@ -48,6 +50,8 @@ class Spec:
             return self.family
         if self.family == "util":
             return f"util_t{self.theta:.2f}_w{self.window_ms}_h{self.hold_ms}"
+        if self.family == "utilx":
+            return f"utilx_t{self.theta:.2f}_w{self.window_ms}_h{self.hold_ms}"
         if self.family == "resp":
             return f"resp_p{self.theta:.2f}_h{self.hold_ms}"
         return f"overrun_g{self.theta:.2f}_h{self.hold_ms}"
@@ -61,9 +65,15 @@ class Spec:
             return lambda d: Oracle(d)
         if self.family == "util":
             return lambda d: UtilMonitor(self.theta, self.window_ms * 1000, self.hold_ms * 1000)
+        if self.family == "utilx":
+            return lambda d: UtilExactMonitor(self.theta, self.window_ms * 1000, self.hold_ms * 1000)
         if self.family == "resp":
             return lambda d: RespMonitor(self.theta, TASKS[CTRL].deadline, self.hold_ms * 1000, CTRL)
         return lambda d: OverrunMonitor(self.theta * ehat, self.hold_ms * 1000)
+
+
+def utilx_specs() -> list[Spec]:
+    return [Spec("utilx", th, w, h) for h in HOLDS_MS for w in UTIL_WINDOWS_MS for th in UTILX_THETAS]
 
 
 def resp_specs() -> list[Spec]:

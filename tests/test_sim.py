@@ -71,3 +71,15 @@ def test_noise_scale_one_is_the_default():
     a = run(lambda d: NoMonitor(), "burst", 2)
     b = simulate(lambda d: NoMonitor(), "burst", 2, duration_us=DUR, noise_scale=1.0).metrics
     assert a["miss_rate"] == b["miss_rate"] and a["rms_err"] == b["rms_err"]
+
+
+def test_exact_utilisation_clips_the_window_edge():
+    from ovb.monitors import UtilExactMonitor, UtilMonitor
+    ex, pr = UtilExactMonitor(0.6, window_us=100, hold_us=50), UtilMonitor(0.6, window_us=100, hold_us=50)
+    # one 90 us busy action ending at t=130: the window is (30, 130], so 90 us are inside for both
+    ex.on_action(130, 90, 10, True); pr.on_action(130, 90, 10, True)
+    # a further 40 us action ending at t=170: window (70, 170]; the first action contributes only 60 us when clipped
+    ex.on_action(170, 40, 10, True); pr.on_action(170, 40, 10, True)
+    assert ex.sum == 130 and ex.sum - (70 - 40) == 100          # clipped busy time inside the window
+    assert pr.sum == 130                                          # the proxy keeps the full 130 us (> window)
+    assert pr.sum > 100 >= ex.sum - (70 - 40)                     # proxy exceeds the window length, exact does not

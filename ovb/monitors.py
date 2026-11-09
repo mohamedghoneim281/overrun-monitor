@@ -9,7 +9,10 @@ has already started: a nonpreemptive callback that is running cannot be shed.
   none      never sheds (baseline)
   always    always sheds optional work (lower bound on timing misses / optional work)
   oracle    clairvoyant diagnostic: sheds a job iff it would exceed its NET (not causal)
-  util      sheds while windowed CPU utilisation exceeds a threshold      (comparison)
+  util      completed-action busy-time proxy over a window (an action that ends inside the
+            window counts with its full duration; can exceed 1)              (comparison)
+  utilx     exact sliding-window busy fraction (the part of an action outside the window is
+            clipped, so the value never exceeds 1)                           (stronger comparison)
   resp      symptom monitor: sheds once a control job's response time exceeds phi * deadline
   overrun   sheds once the exceedance accumulated since the last quiet instant reaches a
             budget  theta_e = gamma * e_hat_ctrl, where e_hat_ctrl is the analytic tolerable
@@ -157,6 +160,41 @@ class RespMonitor(Monitor):
     def on_job_done(self, task, resp_us, t):
         if task == self.task and resp_us > self.limit:
             self._trigger(t, self.hold)
+
+    def shed(self, t, nominal_us, net_us):
+        return t < self.active_until
+
+
+class UtilExactMonitor(Monitor):
+    """Exact sliding-window busy fraction, evaluated at the end of every busy action.
+
+    Unlike UtilMonitor, an action that straddles the left edge of the window contributes only
+    the part inside the window, so the value is a true utilisation in [0, 1].  (A monitor inside
+    a nonpreemptive loop still cannot sample in the middle of an action.)"""
+    name = "utilx"
+    cost = MONITOR_COST
+
+    def __init__(self, theta: float, window_us: int = 100_000, hold_us: int = 500_000):
+        super().__init__()
+        self.limit = theta * window_us
+        self.window = window_us
+        self.hold = hold_us
+        self.q: deque = deque()          # (start, end) of busy actions, in time order
+        self.sum = 0                     # total duration of the actions in q
+
+    def on_action(self, t_end, dur, net, busy):
+        if not busy:
+            return
+        q = self.q
+        q.append((t_end - dur, t_end)); self.sum += dur
+        lo = t_end - self.window
+        while q and q[0][1] <= lo:
+            s0, e0 = q.popleft(); self.sum -= (e0 - s0)
+        inside = self.sum
+        if q and q[0][0] < lo:           # only the oldest action can straddle the window edge
+            inside -= (lo - q[0][0])
+        if inside > self.limit:
+            self._trigger(t_end, self.hold)
 
     def shed(self, t, nominal_us, net_us):
         return t < self.active_until

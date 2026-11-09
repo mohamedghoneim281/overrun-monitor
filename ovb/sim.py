@@ -51,7 +51,7 @@ def simulate(make_monitor: Callable[[Disturbance], Monitor], scenario: str, seed
              tasks=TASKS, ovh=OVERHEADS, worst_case: bool = False,
              injections: Optional[dict] = None, phases: Optional[list] = None,
              with_plant: bool = True, trace: bool = False, keep_resp: bool = False,
-             light: bool = False, noise_scale: float = 1.0) -> RunResult:
+             light: bool = False, noise_scale: float = 1.0, fast_idle: bool = True) -> RunResult:
     n = len(tasks)
     s = ovh.s
     assert s == n, "one socket per callback"
@@ -158,8 +158,20 @@ def simulate(make_monitor: Callable[[Disturbance], Monitor], scenario: str, seed
                 if nread[i] < len(arr[i]) and arr[i][nread[i]] < ta:
                     ta = arr[i][nread[i]]
             di = t - it0
-            if di > 0 and ta - t > 4 * di:
-                t += ((ta - t) // di - 2) * di
+            if fast_idle and di > 0 and ta - t > 4 * di:
+                t_skip = t + ((ta - t) // di - 2) * di
+                # Replay the OS-noise events inside the skipped interval: each one stretches an idle action
+                # (modelled as a failed read) and is followed by the idle reset, so monitors that count
+                # overrun on non-busy actions see exactly what they would see action by action.
+                while np_ < nlen and nt[np_] < t:
+                    np_ += 1
+                while np_ < nlen and nt[np_] < t_skip:
+                    dn = nd[np_]
+                    te = nt[np_] + dn
+                    on_action(te, b_fr + dn, n_fr, False)
+                    mon.on_quiet(te)
+                    np_ += 1
+                t = t_skip
             continue
         on_action(t, d, n_sel, True)
         # --- dispatch, execute, complete --------------------------------------------------

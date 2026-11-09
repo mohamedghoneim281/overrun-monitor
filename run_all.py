@@ -6,7 +6,7 @@
     python run_all.py --mode smoke           # ~1 minute, tiny grid (sanity check)
     python run_all.py --stage analyze        # re-do tables/figures from results/runs.csv
 
-Stages: validate -> sweep -> resp -> analyze (harsh/noise checks run inside analyze);
+Stages: validate -> sweep -> resp -> utilx -> analyze (harsh/noise checks run inside analyze);
 `--stage extend` is an optional grid-extension check (run after the sweep).
 """
 import argparse
@@ -25,7 +25,7 @@ MODES = {"smoke": dict(train=3, test=4, small=True, trials=10, dur=20.0),
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--mode", choices=MODES, default="quick")
-    ap.add_argument("--stage", choices=["all", "validate", "sweep", "analyze", "extend", "resp"], default="all")
+    ap.add_argument("--stage", choices=["all", "validate", "sweep", "analyze", "extend", "resp", "utilx", "idlecheck"], default="all")
     ap.add_argument("--jobs", type=int, default=0, help="worker processes (default: all cores)")
     ap.add_argument("--out", default=str(ROOT / "results"))
     a = ap.parse_args()
@@ -55,6 +55,15 @@ def main():
         from ovb import experiments as ex
         ex.run_grid(ex.resp_specs(), ex.SCENARIOS, cfg["train"], cfg["test"], str(out / "runs_resp.csv"),
                     duration_s=cfg["dur"], jobs=a.jobs)
+
+    if a.stage in ("all", "utilx"):   # exact sliding-window utilisation baseline
+        from ovb import experiments as ex
+        ex.run_grid(ex.utilx_specs(), ex.SCENARIOS, cfg["train"], cfg["test"], str(out / "runs_utilx.csv"),
+                    duration_s=cfg["dur"], jobs=a.jobs)
+
+    if a.stage == "idlecheck":    # does skipping idle iterations change the results?
+        from ovb import idlecheck
+        idlecheck.main(out)
 
     if a.stage == "extend":       # optional, ~10 min: widen the grids and re-select on train seeds
         from ovb import extend

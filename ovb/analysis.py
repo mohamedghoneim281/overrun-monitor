@@ -199,7 +199,16 @@ def robustness_table(tasks: Sequence[Task], o: Overheads) -> list[dict]:
 
 
 def unavoidable_slowdowns(tasks: Sequence[Task], o: Overheads, protected: int = 0) -> list[dict]:
-    """Late-warning limit of any causal in-loop monitor.
+    """Algebraic certificate-loss factor s* = 1 + e_hat/C (LEGACY NAME: the function and its CSV were first
+    called "unavoidable slowdowns"; s* is NOT an impossibility threshold).
+
+    s* is the slowdown of all actions of one job at which that job's own exceedance (s-1)*C_ovh exceeds
+    the protected callback's TET, i.e. the sufficient test of the analysis stops certifying the deadline.
+    A miss that is actually *forced* needs a stronger condition (the running nonpreemptive callback body
+    outlasts the deadline: s * NET > D when the protected job arrives just after its dispatch); see the
+    report, Observation 1.  The original docstring follows for reference.
+
+    Late-warning limit of any causal in-loop monitor (original wording, superseded).
 
     A nonpreemptive callback that has started cannot be stopped.  If a single job j of callback
     chi exhibits slowdown s (c(j) = s * C_ovh), it alone contributes (s-1)*C_ovh(chi) of
